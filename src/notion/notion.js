@@ -1,3 +1,4 @@
+const fsP = require("fs/promises");
 const { Client } = require("@notionhq/client");
 
 class NotionWakaTime {
@@ -8,9 +9,13 @@ class NotionWakaTime {
     }
     async getWakaTimeParentPageId() {
         let notionListWakaTime = await this.notionClient.search({
-            query: "Wakatime-Report"
+            query: "Wakatime-Report",
+            "filter": {
+                "value": "database",
+                "property": "object"
+            }
         });
-        let wakaTimeParentPage = notionListWakaTime.results.find(v => v.object === "page");
+        let wakaTimeParentPage = notionListWakaTime.results.find(v => v.object === "database");
         return wakaTimeParentPage.id;
     }
     /**
@@ -18,16 +23,16 @@ class NotionWakaTime {
     * @param {import('../def/index.d').wakaTimeObj} wakaTimeObj 
     */
     async createWakaTimePage(wakaTimeObj) {
+        let title = `Wakatime ${wakaTimeObj.start} until ${wakaTimeObj.end}`;
         if (await this.isReportExist(wakaTimeObj)) {
-            console.log("The table exist");
+            console.log(`The table ${title} exist`);
             return;
         }
         let wakaTimeParentPageId = await this.getWakaTimeParentPageId();
-        let title = `Wakatime ${wakaTimeObj.start} until ${wakaTimeObj.end}`;
         let notionPage = {
             "parent": {
-                "type": "page_id",
-                "page_id": wakaTimeParentPageId
+                "type": "database_id",
+                "database_id": wakaTimeParentPageId
             },
             "properties": {
                 "title": {
@@ -59,9 +64,10 @@ class NotionWakaTime {
         this.addTotalTime(wakaTimeObj, notionPage);
         this.addProjectTitle(notionPage);
         this.addProjectTimeTable(wakaTimeObj, notionPage);
-        console.log(JSON.stringify(notionPage, null , 4));
+        // await fsP.writeFile("./item.json", JSON.stringify(notionPage, null , 4));
         let createResponse = await this.notionClient.pages.create(notionPage);
-        console.log(createResponse);
+        // console.log(createResponse);
+        console.log(`create ${title} completed`);
     }
     /**
      * 
@@ -69,7 +75,7 @@ class NotionWakaTime {
      * @return {Promise<Boolean>}
      */
     async isReportExist(wakaTimeObj) {
-        let title = `Wakatime ${wakaTimeObj.start} until ${wakaTimeObj.end}`;
+        let title = `"Wakatime ${wakaTimeObj.start} until ${wakaTimeObj.end}"`;
         let notionListWakaTime = await this.notionClient.search({
             query: title
         });
@@ -206,8 +212,8 @@ class NotionWakaTime {
         for(let i = 0; i < wakaTimeObj.projectsAndTime.length ; i++) {
             let projectAndTime = wakaTimeObj.projectsAndTime[i];
             let projectAndTimeSplit = projectAndTime.split(" : ");
-            let projectName = projectAndTimeSplit[0];
-            let projectTime = projectAndTimeSplit[1];
+            let projectName = String(projectAndTimeSplit[0]);
+            let projectTime = String(projectAndTimeSplit[1]) || "";
             tableObj.table.children.push({
                 "object": "block",
                 "type": "table_row",

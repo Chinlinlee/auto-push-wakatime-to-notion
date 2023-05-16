@@ -1,7 +1,8 @@
 const path = require('path');
 const fs = require('fs');
-const readline = require('readline');
+const fsP = require('fs/promises');
 const { google } = require('googleapis');
+const { authenticate } = require('@google-cloud/local-auth');
 const base64 = require('js-base64');
 const _ = require('lodash');
 const URL = require('url');
@@ -14,7 +15,8 @@ const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
 // The file token.json stores the user's access and refresh tokens, and is
 // created automatically when the authorization flow completes for the first
 // time.
-const TOKEN_PATH = 'token.json';
+const TOKEN_PATH = path.join(__dirname, "../token.json");
+const CREDENTIALS_PATH = path.join(__dirname, "../credentials.json");
 
 // Load client secrets from a local file.
 function createWakaTimePageFromGmail() {
@@ -22,22 +24,31 @@ function createWakaTimePageFromGmail() {
         if (err) return console.log('Error loading client secret file:', err);
         let notionWakaTime = new NotionWakaTime(config.notion.token);
         // Authorize a client with credentials, then call the Gmail API.
-        let authClient = await authorize(JSON.parse(content));
+        let authClient = await authorize();
         let messages = await listMessages(authClient);
         for (let messageObj of messages) {
             let message = await readMessage(authClient, messageObj.id);
-            let body = message.payload.parts[0].body.data;
+            let body;
+            if (Object.prototype.hasOwnProperty.call(message.payload, "parts")) {
+                body = message.payload.parts[0].body.data;
+            } else { // No coding week
+                continue;
+            }
             let bodyClean = body.replace(/-/g, '+').replace(/_/g, '/');
             let htmlBody = base64.Base64.decode(bodyClean);
             let htmlBodySplit = _.compact(htmlBody.split(/\r\n/));
             let total = htmlBodySplit[0];
+            if (!total.includes("mins")) {
+                total = htmlBodySplit[htmlBodySplit.indexOf("total")-1];
+            }
             let wakaTimeUrl = new URL.URL(htmlBodySplit[1]);
-            let wakaTimeUlrParams = new URL.URLSearchParams(wakaTimeUrl.searchParams);
-            let reportStart = wakaTimeUlrParams.get("start");
-            let reportEnd = wakaTimeUlrParams.get("end");
+            let wakaTimeUrlParams = new URL.URLSearchParams(wakaTimeUrl.searchParams);
+            let reportStart = wakaTimeUrlParams.get("start");
+            let reportEnd = wakaTimeUrlParams.get("end");
+            let startProjectIndex = htmlBodySplit.indexOf("Projects:");
             let endProjectIndex = htmlBodySplit.indexOf("Languages:");
             let projectsAndTime = [];
-            for (let projectIndex = 3; projectIndex < endProjectIndex; projectIndex++) {
+            for (let projectIndex = startProjectIndex+1 ; projectIndex < endProjectIndex; projectIndex++) {
                 projectsAndTime.push(htmlBodySplit[projectIndex])
             }
             let wakaTimeReport = {
@@ -48,61 +59,58 @@ function createWakaTimePageFromGmail() {
             };
             await notionWakaTime.createWakaTimePage(wakaTimeReport);
         }
+        console.log("push to notion completed");
     });
 }
 
 
 /**
- * Create an OAuth2 client with the given credentials, and then execute the
- * given callback function.
- * @param {Object} credentials The authorization client credentials.
+ * Reads previously authorized credentials from the save file.
+ *
+ * @return {Promise<OAuth2Client|null>}
  */
-function authorize(credentials) {
-    return new Promise((resolve, reject) => {
-        const { client_secret, client_id, redirect_uris } = credentials.installed;
-        const oAuth2Client = new google.auth.OAuth2(
-            client_id, client_secret, redirect_uris[0]);
-    
-        // Check if we have previously stored a token.
-        fs.readFile(TOKEN_PATH, async (err, token) => {
-            if (err) return await getNewToken(oAuth2Client);
-            oAuth2Client.setCredentials(JSON.parse(token));
-            resolve(oAuth2Client);
-        });
-    });
+async function loadSavedCredentialsIfExist() {
+    try {
+        const content = await fsP.readFile(TOKEN_PATH);
+        const credentials = JSON.parse(content);
+        return google.auth.fromJSON(credentials);
+    } catch (err) {
+        return null;
+    }
 }
 
 /**
- * Get and store new token after prompting for user authorization, and then
- * execute the given callback with the authorized OAuth2 client.
- * @param {google.auth.OAuth2} oAuth2Client The OAuth2 client to get token for.
- * @param {getEventsCallback} callback The callback for the authorized client.
+ * Serializes credentials to a file comptible with GoogleAUth.fromJSON.
+ *
+ * @param {OAuth2Client} client
+ * @return {Promise<void>}
  */
-function getNewToken(oAuth2Client, callback) {
-    return new Promise((resolve, reject) => {
-        const authUrl = oAuth2Client.generateAuthUrl({
-            access_type: 'offline',
-            scope: SCOPES,
-        });
-        console.log('Authorize this app by visiting this url:', authUrl);
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-        });
-        rl.question('Enter the code from that page here: ', (code) => {
-            rl.close();
-            oAuth2Client.getToken(code, (err, token) => {
-                if (err) return reject('Error retrieving access token', err);
-                oAuth2Client.setCredentials(token);
-                // Store the token to disk for later program executions
-                fs.writeFile(TOKEN_PATH, JSON.stringify(token), (err) => {
-                    if (err) return reject(err);
-                    console.log('Token stored to', TOKEN_PATH);
-                });
-                return resolve(oAuth2Client);
-            });
-        });
+async function saveCredentials(client) {
+    const content = await fsP.readFile(CREDENTIALS_PATH);
+    const keys = JSON.parse(content);
+    const key = keys.installed || keys.web;
+    const payload = JSON.stringify({
+      type: 'authorized_user',
+      client_id: key.client_id,
+      client_secret: key.client_secret,
+      refresh_token: client.credentials.refresh_token,
     });
+    await fsP.writeFile(TOKEN_PATH, payload);
+}
+  
+
+async function authorize() {
+    let client = await loadSavedCredentialsIfExist();
+    if (client) return client;
+    client = await authenticate({
+        scopes: SCOPES,
+        keyfilePath: CREDENTIALS_PATH
+    });
+
+    if (client.credentials) {
+        await saveCredentials(client);
+      }
+    return client;
 }
 
 /**
@@ -129,7 +137,7 @@ function listLabels(auth) {
 }
 
 function listMessages(auth) {
-    return new Promise((resolve, reject)=> {
+    return new Promise((resolve, reject) => {
         const gmail = google.gmail({ version: 'v1', auth });
         gmail.users.messages.list({
             userId: 'me',
@@ -139,7 +147,7 @@ function listMessages(auth) {
             if (err) {
                 // console.log('The API returned an error: ' + err);
                 return reject('The API returned an error: ' + err);
-            } 
+            }
             const messages = res.data;
             return resolve(messages.messages);
         });
@@ -152,7 +160,7 @@ function listMessages(auth) {
  * @return {Promise<gmail_v1.Schema$Message>}
  */
 function readMessage(auth, id) {
-    return new Promise((resolve, reject)=> {
+    return new Promise((resolve, reject) => {
         const gmail = google.gmail({ version: 'v1', auth });
         gmail.users.messages.get({
             userId: 'me',
@@ -161,7 +169,7 @@ function readMessage(auth, id) {
             if (err) {
                 // console.log('The API returned an error: ' + err);
                 return reject('The API returned an error: ' + err);
-            } 
+            }
             const message = res.data;
             return resolve(message);
         });
@@ -169,3 +177,4 @@ function readMessage(auth, id) {
 }
 
 const scheduleToAddNewReport = schedule.scheduleJob("0 0 12 * * 2", createWakaTimePageFromGmail);
+createWakaTimePageFromGmail();
