@@ -1,4 +1,6 @@
 # auto-push-wakatime-to-notion
+![image](https://github.com/Chinlinlee/auto-push-wakatime-to-notion/assets/49154622/a17f4baf-24f4-415f-aa93-4f76385302f6)
+
 自動把gmail收到的wakatime報告同步到notion。
 
 - 詳細內容可看 [將 WakaTime 自動同步到 Notion](https://luxuriant-cobbler-efa.notion.site/Wakatime-Notion-9f5bb51342d341a79a9d36667dc856bb)
